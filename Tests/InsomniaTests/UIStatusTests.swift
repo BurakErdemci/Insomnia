@@ -936,7 +936,7 @@ final class UIStatusTests: XCTestCase {
         XCTAssertEqual(width(), start, accuracy: 0.001, "a pending start keeps the room until the slots leave")
         model.phase = .entering(.start)
         model.startError = MenuBarModel.startFailedText
-        XCTAssertNotEqual(width(), start, "the start error replaces the hint")
+        XCTAssertGreaterThan(width(), start, "the start error label adds width after the hint, which stays")
     }
 
     /// While a session runs the end hint swaps the countdown for its label.

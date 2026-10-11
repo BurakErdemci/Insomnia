@@ -74,12 +74,11 @@ struct StatusRootView: View {
             // `.animation(_:value:)` on this container did not reach it.
             if model.slotsPresent {
                 pills
+                keyHint
                 if let error = model.startError {
                     startError(error)
                         .opacity(model.startErrorShown ? 1 : 0)
                         .animation(Motion.base(reduceMotion: reduceMotion), value: model.startErrorShown)
-                } else {
-                    keyHint
                 }
             } else if showsCountdown {
                 if model.endHint && showsRunningControls {
@@ -216,12 +215,13 @@ struct StatusRootView: View {
             .accessibilityHidden(true)
     }
 
-    static let startKeyHint = "\u{21A9} start \u{00B7} esc cancel"
-    static let extendKeyHint = "\u{21A9} add \u{00B7} esc cancel"
+    static let startKeyHint = "\u{21A9} start \u{00B7} esc"
+    static let extendKeyHint = "\u{21A9} add \u{00B7} esc"
 
     /// What Enter and Esc do while the pills are open. The longer text sets
     /// the width in both modes, so the hint never changes the layout when
-    /// the mode flips under the pills or a start is pending.
+    /// the mode flips under the pills or a start is pending. It stays when a
+    /// refused start adds its label after it.
     private var keyHint: some View {
         Text(Self.startKeyHint)
             .hidden()
