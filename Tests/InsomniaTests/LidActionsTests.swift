@@ -855,6 +855,25 @@ final class LidActionsTests: XCTestCase {
 
     // MARK: Lock the screen
 
+    func testLockRunsBeforeDarkeningMuteAndFreezes() async throws {
+        let (m, actions) = await make(dockerRule: false, mute: true)
+        m.config.lockScreenOnLidClose = true
+        m.config.darkenDisplayOnLidClose = true
+        await m.start(duration: 3600)
+        let order = Locked<[String]>([])
+        locker.onLock = { order.value.append("lock") }
+        h.display.onSet = { _ in order.value.append("display") }
+        h.audio.onMute = { order.value.append("mute") }
+        h.procs.onSuspend = { _ in order.value.append("freeze") }
+
+        await actions.onClose()
+
+        XCTAssertEqual(order.value, ["lock", "display", "mute", "freeze"])
+        XCTAssertEqual(h.display.sets, [0])
+        XCTAssertEqual(h.audio.mutes, 1)
+        XCTAssertEqual(h.procs.suspended, [[100, 101, 102]])
+    }
+
     func testCloseLocksTheScreenOnceWhenOn() async throws {
         let (m, actions) = await make()
         m.config.lockScreenOnLidClose = true
