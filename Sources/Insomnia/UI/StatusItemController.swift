@@ -922,14 +922,19 @@ final class StatusHostingView: NSHostingView<StatusRootView> {
         onRightMouseDown?()
     }
 
+    func hostPoint(fromScreen screenPoint: NSPoint) -> CGPoint? {
+        guard let window else { return nil }
+        var point = convert(window.convertPoint(fromScreen: screenPoint), from: nil)
+        if !isFlipped { point.y = bounds.height - point.y }
+        return point
+    }
+
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
             onRightMouseDown?()
             return
         }
-        if let leftClickRouter, let window {
-            var point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-            if !isFlipped { point.y = bounds.height - point.y }
+        if let leftClickRouter, let point = hostPoint(fromScreen: NSEvent.mouseLocation) {
             leftClickRouter(point)
             return
         }

@@ -203,6 +203,106 @@ final class UIStatusTests: XCTestCase {
     }
 
     @MainActor
+    func testHostPointReturnsNilWithoutAWindow() throws {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        let host = StatusItemController.makeHostingView(try XCTUnwrap(lab.controller.hostingView).rootView)
+        XCTAssertNil(host.window)
+        XCTAssertNil(host.hostPoint(fromScreen: NSPoint(x: 400, y: 300)))
+    }
+
+    @MainActor
+    func testHostedScreenPointsHitEveryVisibleControlAtANonzeroWindowOrigin() async throws {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        // A fresh host on the same model in a window away from the screen corner
+        // (the test process keeps the status item window at the origin). The
+        // status item's own host is taken out first so only this one reports frames.
+        let statusHost = try XCTUnwrap(lab.controller.hostingView)
+        statusHost.removeFromSuperview()
+        let host = StatusItemController.makeHostingView(statusHost.rootView)
+        let window = NSWindow(
+            contentRect: NSRect(x: 400, y: 300, width: 400, height: 80),
+            styleMask: .borderless, backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let content = try XCTUnwrap(window.contentView)
+        host.frame = NSRect(x: 29, y: 17, width: 350, height: NSStatusBar.system.thickness)
+        content.addSubview(host)
+        XCTAssertTrue(host.window === window)
+        XCTAssertEqual(window.frame.origin, NSPoint(x: 400, y: 300))
+
+        func screenPoint(for point: CGPoint) -> NSPoint {
+            var local = point
+            if !host.isFlipped { local.y = host.bounds.height - local.y }
+            return window.convertPoint(toScreen: host.convert(local, to: nil))
+        }
+
+        func assertScreenTarget(_ target: StatusHitTarget) throws {
+            let frame = try XCTUnwrap(lab.model.hitFrames[target])
+            XCTAssertGreaterThan(frame.width, 0)
+            XCTAssertGreaterThan(frame.height, 0)
+            // The off-center point also catches an inverted Y axis when the center is symmetric.
+            let points = [CGPoint(x: frame.midX, y: frame.midY), CGPoint(x: frame.midX, y: frame.minY + 1)]
+            for point in points {
+                let converted = try XCTUnwrap(host.hostPoint(fromScreen: screenPoint(for: point)))
+                XCTAssertEqual(converted.x, point.x, accuracy: 0.001)
+                XCTAssertEqual(converted.y, point.y, accuracy: 0.001)
+                XCTAssertEqual(StatusItemController.hitTarget(at: converted, frames: lab.model.hitFrames), target)
+            }
+        }
+
+        do {
+            let idleLayout = await waitForEndConfirmState {
+                content.layoutSubtreeIfNeeded()
+                return lab.model.hitFrames[.icon] != nil
+            }
+            XCTAssertTrue(idleLayout)
+            try assertScreenTarget(.icon)
+
+            lab.controller.expand(mode: .start)
+            await lab.settleOpen()
+            let targets: [StatusHitTarget] = [.icon, .pill(.days), .pill(.hours), .pill(.minutes)]
+            let openLayout = await waitForEndConfirmState {
+                content.layoutSubtreeIfNeeded()
+                return lab.model.visiblePills == 3 && targets.allSatisfy { lab.model.hitFrames[$0] != nil }
+            }
+            XCTAssertTrue(openLayout)
+            for target in targets { try assertScreenTarget(target) }
+
+            lab.controller.collapse()
+            await lab.settleClose()
+            XCTAssertEqual(lab.model.visiblePills, 0)
+            XCTAssertFalse(lab.model.slotsPresent)
+
+            await lab.manager.start(duration: 3600)
+            let runningLayout = await waitForEndConfirmState {
+                content.layoutSubtreeIfNeeded()
+                return lab.model.phase == .running && lab.model.hitFrames[.countdown] != nil
+                    && lab.model.hitFrames[.end] != nil
+            }
+            XCTAssertTrue(runningLayout)
+            XCTAssertTrue(lab.manager.isActive)
+            for target in [StatusHitTarget.icon, .countdown, .end] { try assertScreenTarget(target) }
+
+            let outside = CGPoint(x: host.bounds.midX, y: -1)
+            let converted = try XCTUnwrap(host.hostPoint(fromScreen: screenPoint(for: outside)))
+            XCTAssertEqual(converted.x, outside.x, accuracy: 0.001)
+            XCTAssertEqual(converted.y, outside.y, accuracy: 0.001)
+            XCTAssertNil(StatusItemController.hitTarget(at: converted, frames: lab.model.hitFrames))
+        } catch {
+            lab.controller.collapse()
+            await lab.settleClose()
+            await lab.manager.end(reason: .user)
+            throw error
+        }
+        await lab.manager.end(reason: .user)
+        let ended = await waitForEndConfirmState { !lab.manager.isActive && lab.model.phase == .idle }
+        XCTAssertTrue(ended)
+    }
+
+    @MainActor
     func testHostedCountdownRemainsClickableAfterConfirmationExpires() async throws {
         let lab = Lab(osMajorVersion: 27)
         defer { lab.tearDown() }
