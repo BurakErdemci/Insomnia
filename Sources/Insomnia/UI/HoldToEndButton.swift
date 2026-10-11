@@ -6,10 +6,12 @@ import SwiftUI
 /// A ring draws around the glyph for `Motion.holdDuration` while the mouse
 /// is down; only a completed ring ends the session. Releasing early, or
 /// dragging away, springs the ring back with no action, so a stray click
-/// while reaching for the menu bar clock cannot kill a session.
+/// while reaching for the menu bar clock cannot kill a session. An early
+/// release reports `onShortPress`, so the caller can say how to end it.
 struct HoldToEndButton: View {
     let reduceMotion: Bool
     let action: () -> Void
+    var onShortPress: (() -> Void)?
 
     @State private var progress: CGFloat = 0
     /// Mouse is down and the ring is drawing.
@@ -54,7 +56,10 @@ struct HoldToEndButton: View {
                 }
                 .onEnded { _ in
                     pressed = false
-                    if holding { release() }
+                    if holding {
+                        release()
+                        onShortPress?()
+                    }
                 }
         )
         .help("Hold to end the session")

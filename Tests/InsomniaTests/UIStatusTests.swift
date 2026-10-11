@@ -870,6 +870,97 @@ final class UIStatusTests: XCTestCase {
         controller.collapse()
     }
 
+    /// A click on the eye with nothing typed shakes and closes: it must not
+    /// do what bare Enter does and start the default preset.
+    @MainActor
+    func testClickingTheEyeOverAnEmptyStartInputShakesThenCollapsesWithoutStarting() async throws {
+        let lab = Lab()
+        defer { lab.tearDown() }
+        let controller = lab.controller
+
+        controller.expand(mode: .start)
+        await lab.settleOpen()
+        XCTAssertNil(controller.model.input.total)
+        let shakes = controller.model.rejectBounce
+        let bounces = controller.model.iconBounce
+
+        controller.iconTapped()
+        XCTAssertEqual(controller.model.rejectBounce, shakes + 1, "the empty click is answered with a shake")
+        XCTAssertEqual(controller.model.iconBounce, bounces + 1)
+        XCTAssertTrue(controller.model.pillsCollapsing, "and the pills fold shut")
+        await lab.settleClose()
+        XCTAssertEqual(controller.model.phase, .idle)
+        XCTAssertFalse(controller.model.slotsPresent)
+        XCTAssertFalse(lab.manager.isActive, "an empty click never starts a session")
+    }
+
+    /// The end hint raises its flag at once, clears itself, and a second
+    /// press restarts the clock instead of letting the first one clear it.
+    @MainActor
+    func testTheEndHintClearsItselfAndARepeatPressRestartsTheTimer() async {
+        let model = MenuBarModel()
+        model.endHintDuration = .milliseconds(200)
+        XCTAssertFalse(model.endHint)
+
+        model.showEndHint()
+        XCTAssertTrue(model.endHint)
+        try? await Task.sleep(for: .milliseconds(120))
+        model.showEndHint()
+        try? await Task.sleep(for: .milliseconds(120))
+        XCTAssertTrue(model.endHint, "240 ms in, the first timer's 200 ms has passed but the second has not")
+        try? await Task.sleep(for: .milliseconds(250))
+        XCTAssertFalse(model.endHint)
+    }
+
+    /// The Enter/Esc hint is part of the open pills' layout: it is the same
+    /// width in both modes and while a start is pending, so a mode flip under
+    /// the open pills never moves the bar.
+    @MainActor
+    func testTheKeyHintKeepsTheOpenPillsWidthAcrossModes() {
+        let harness = Harness()
+        defer { harness.home.destroy() }
+        let manager = harness.makeManager()
+        let model = MenuBarModel()
+        model.slotsPresent = true
+        model.visiblePills = DurationInput.Field.allCases.count
+        func width() -> CGFloat {
+            StatusItemController.makeHostingView(StatusRootView(
+                model: model, manager: manager, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, onWidthChange: { _ in }
+            )).fittingSize.width
+        }
+        model.phase = .entering(.start)
+        let start = width()
+        model.phase = .entering(.extend)
+        XCTAssertEqual(width(), start, accuracy: 0.001, "extend mode reads shorter text in the same room")
+        model.phase = .starting
+        XCTAssertEqual(width(), start, accuracy: 0.001, "a pending start keeps the room until the slots leave")
+        model.phase = .entering(.start)
+        model.startError = MenuBarModel.startFailedText
+        XCTAssertNotEqual(width(), start, "the start error replaces the hint")
+    }
+
+    /// While a session runs the end hint swaps the countdown for its label.
+    @MainActor
+    func testTheEndHintReplacesTheCountdownWhileRunning() async {
+        let harness = Harness()
+        defer { harness.home.destroy() }
+        let manager = harness.makeManager()
+        await manager.start(duration: 3600)
+        let model = MenuBarModel()
+        model.phase = .running
+        func width() -> CGFloat {
+            StatusItemController.makeHostingView(StatusRootView(
+                model: model, manager: manager, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, onWidthChange: { _ in }
+            )).fittingSize.width
+        }
+        let counting = width()
+        model.endHint = true
+        XCTAssertNotEqual(width(), counting, "the label takes the countdown's place")
+        model.endHint = false
+        XCTAssertEqual(width(), counting, accuracy: 0.001)
+        await manager.end(reason: .user)
+    }
+
     /// Over a live session the same click reopens the pills in extend mode.
     @MainActor
     func testClickingTheEyeDuringACollapseOverASessionReopensTheExtendPills() async throws {

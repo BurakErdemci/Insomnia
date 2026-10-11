@@ -19,6 +19,8 @@ struct StatusRootView: View {
     let onTapPill: (DurationInput.Field) -> Void
     let onTapCountdown: () -> Void
     let onHoldEnd: () -> Void
+    /// The end control was pressed but released before the ring closed.
+    var onShortPress: () -> Void = {}
     let onWidthChange: (CGFloat) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotionEnv
@@ -76,11 +78,17 @@ struct StatusRootView: View {
                     startError(error)
                         .opacity(model.startErrorShown ? 1 : 0)
                         .animation(Motion.base(reduceMotion: reduceMotion), value: model.startErrorShown)
+                } else {
+                    keyHint
                 }
             } else if showsCountdown {
-                countdown
+                if model.endHint && showsRunningControls {
+                    endHint
+                } else {
+                    countdown
+                }
                 if showsRunningControls {
-                    HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd)
+                    HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd, onShortPress: onShortPress)
                         .transition(Motion.ringTransition(reduceMotion: reduceMotion))
                 }
             }
@@ -194,6 +202,38 @@ struct StatusRootView: View {
             .contentShape(Rectangle())
             .onTapGesture(perform: onTapCountdown)
             .accessibilityLabel(model.phase == .starting ? "Starting session" : countdownText)
+    }
+
+    /// What a click on the end control teaches: it takes a hold. Shown in
+    /// place of the countdown for a moment, in the start error's style.
+    private var endHint: some View {
+        Text("Hold to end")
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .foregroundStyle(Color(brand: BrandPalette.violet))
+            .lineLimit(1)
+            .fixedSize()
+            .transition(Motion.errorTransition(reduceMotion: reduceMotion))
+            .accessibilityHidden(true)
+    }
+
+    static let startKeyHint = "\u{21A9} start \u{00B7} esc cancel"
+    static let extendKeyHint = "\u{21A9} add \u{00B7} esc cancel"
+
+    /// What Enter and Esc do while the pills are open. The longer text sets
+    /// the width in both modes, so the hint never changes the layout when
+    /// the mode flips under the pills or a start is pending.
+    private var keyHint: some View {
+        Text(Self.startKeyHint)
+            .hidden()
+            .overlay(alignment: .leading) {
+                Text(model.mode == .extend ? Self.extendKeyHint : Self.startKeyHint)
+            }
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .transition(Motion.errorTransition(reduceMotion: reduceMotion))
+            .accessibilityHidden(true)
     }
 
     /// The manager refused the start: say so next to the pills the value is

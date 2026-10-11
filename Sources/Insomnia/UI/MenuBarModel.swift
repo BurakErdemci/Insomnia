@@ -68,6 +68,12 @@ final class MenuBarModel {
     /// hides it at once but keeps its text, and so its room in the layout,
     /// until the slots leave, so the bar is written once, then.
     var startErrorShown: Bool { startError != nil && phase.isEntering }
+    /// A short press on the end control is showing "Hold to end" in place of
+    /// the countdown; `showEndHint()` sets it and it clears itself.
+    var endHint = false
+    /// How long the end hint stays up. A property so a test need not wait it out.
+    @ObservationIgnored var endHintDuration: Duration = .milliseconds(1500)
+    @ObservationIgnored private var endHintTask: Task<Void, Never>?
     var input = DurationInput()
     var focused: DurationInput.Field = .hours
     /// The three pill slots are in the layout. Set outside any animation, so
@@ -94,6 +100,21 @@ final class MenuBarModel {
     var iconBounce: Int = 0
     var focusBounce: Int = 0
     var rejectBounce: Int = 0
+
+    /// Show the end hint, restarting its timer if it is already up. Set
+    /// outside any animation: it swaps the countdown for the label, a layout
+    /// change like `startError`.
+    func showEndHint() {
+        endHintTask?.cancel()
+        endHint = true
+        let duration = endHintDuration
+        endHintTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: duration)
+            guard !Task.isCancelled, let self else { return }
+            self.endHint = false
+            self.endHintTask = nil
+        }
+    }
 
     var mode: Mode? {
         if case let .entering(m) = phase { return m }

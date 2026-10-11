@@ -110,6 +110,7 @@ final class StatusItemController: NSObject {
             onTapPill: { [weak self] field in self?.focus(field) },
             onTapCountdown: { [weak self] in self?.customExtend() },
             onHoldEnd: { [weak self] in self?.holdToEnd() },
+            onShortPress: { [weak self] in self?.model.showEndHint() },
             onWidthChange: { [weak self] w in self?.widthChanged(w) }
         )
         let host = Self.makeHostingView(root)
@@ -290,6 +291,10 @@ final class StatusItemController: NSObject {
             } else if model.input.total != nil {
                 commit()
             } else {
+                // Enter on an empty start input would start the default
+                // preset; a click on the eye must not, so it only answers
+                // with a shake before closing.
+                if mode == .start { model.rejectBounce += 1 }
                 collapse()
             }
         case .starting:

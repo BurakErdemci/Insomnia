@@ -97,9 +97,10 @@ file and explains how upgrades replace them.
 ## Using it
 
 1. **Start.** Click the eye in the menu bar, enter days, hours and minutes,
-   and press Enter.
+   and press Enter to start or Esc to cancel.
 2. **Add time.** Click the eye or the countdown during a session.
-3. **End early.** Press and hold the end control next to the countdown.
+3. **End early.** Press and hold the end control next to the countdown. A
+   single click only shows "Hold to end"; the session ends on the hold.
 4. **Settings and status.** Right-click the eye. Quit asks Insomnia to undo
    the session first, and it refuses while a change is still waiting to be
    undone. Saved audio for an output that isn't connected doesn't hold it up.
