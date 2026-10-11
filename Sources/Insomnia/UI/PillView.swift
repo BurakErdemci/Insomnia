@@ -19,6 +19,7 @@ struct PillView: View {
     let focusBounce: Int
     let rejectBounce: Int
     let reduceMotion: Bool
+    let routesClicksManually: Bool
     let onTap: () -> Void
 
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: 7, style: .continuous) }
@@ -59,7 +60,8 @@ struct PillView: View {
         .environment(\.colorScheme, .dark)
         .contentShape(Rectangle())
         .help(field.help)
-        .onTapGesture(perform: onTap)
+        .onTapGesture { if !routesClicksManually { onTap() } }
+        .accessibilityAction { onTap() }
         .phaseAnimator([CGFloat(1), Motion.bounceScale(reduceMotion: reduceMotion), 1], trigger: focused ? focusBounce : 0) { content, scale in
             content.scaleEffect(scale)
         } animation: { _ in

@@ -60,7 +60,37 @@ final class MenuBarModel {
     /// start. Short on purpose: the full reason is in the right-click menu.
     static let startFailedText = "Couldn\u{2019}t start"
 
-    var phase: Phase = .idle
+    var phase: Phase = .idle {
+        didSet {
+            if phase != .running { disarmEndConfirm() }
+        }
+    }
+    var endConfirmArmed = false
+    @ObservationIgnored private(set) var endConfirmDeadline: Date?
+    @ObservationIgnored var hitFrames: [StatusHitTarget: CGRect] = [:]
+    @ObservationIgnored var hitFrameOwners: [StatusHitTarget: UUID] = [:]
+    @ObservationIgnored var endConfirmWindow: TimeInterval = 2
+    @ObservationIgnored private var endConfirmTask: Task<Void, Never>?
+
+    func armEndConfirm(now: Date = Date()) {
+        endConfirmTask?.cancel()
+        endConfirmDeadline = now.addingTimeInterval(endConfirmWindow)
+        endConfirmArmed = true
+        let window = endConfirmWindow
+        endConfirmTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(window))
+            guard !Task.isCancelled else { return }
+            self?.disarmEndConfirm()
+        }
+    }
+
+    func disarmEndConfirm() {
+        endConfirmTask?.cancel()
+        endConfirmTask = nil
+        endConfirmDeadline = nil
+        endConfirmArmed = false
+    }
+
     /// Concise start failure shown beside the pills; cleared on the next
     /// commit, open or collapse.
     var startError: String?

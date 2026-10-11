@@ -54,10 +54,13 @@ final class UIStartupTests: XCTestCase {
             let root = StatusRootView(
                 model: model,
                 manager: manager,
+                routesClicksManually: controller.routesClicksManually,
                 onTapIcon: {},
                 onTapPill: { _ in },
                 onTapCountdown: {},
                 onHoldEnd: {},
+                endsByConfirmClick: controller.endsByConfirmClick,
+                onTapEnd: {},
                 onWidthChange: { _ in }
             )
             return StatusItemController.makeHostingView(root).fittingSize.width
@@ -86,7 +89,7 @@ final class UIStartupTests: XCTestCase {
         rig.openAndTypeOneDay()
         let idleWidth: CGFloat = {
             let m = MenuBarModel()
-            let root = StatusRootView(model: m, manager: rig.manager, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, onWidthChange: { _ in })
+            let root = StatusRootView(model: m, manager: rig.manager, routesClicksManually: rig.controller.routesClicksManually, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, endsByConfirmClick: rig.controller.endsByConfirmClick, onTapEnd: {}, onWidthChange: { _ in })
             return StatusItemController.makeHostingView(root).fittingSize.width
         }()
 
@@ -141,7 +144,10 @@ final class UIStartupTests: XCTestCase {
     @MainActor
     func testImmediateHelperFailureReopensThePillsWithTheValueAndAConciseError() async {
         let rig = Rig()
-        defer { rig.h.home.destroy() }
+        defer {
+            rig.controller.collapse()
+            rig.h.home.destroy()
+        }
         rig.h.backstop.failArm = true
         rig.openAndTypeOneDay()
 
@@ -167,7 +173,10 @@ final class UIStartupTests: XCTestCase {
     @MainActor
     func testDelayedHelperFailureLeavesStartingThenReopensThePills() async {
         let rig = Rig()
-        defer { rig.h.home.destroy() }
+        defer {
+            rig.controller.collapse()
+            rig.h.home.destroy()
+        }
         let gate = AsyncGate()
         rig.h.backstop.armGate = gate
         rig.h.backstop.failArm = true

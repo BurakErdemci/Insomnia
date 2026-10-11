@@ -1,5 +1,13 @@
 import SwiftUI
 
+enum StatusHitTarget: Hashable {
+    case icon
+    case pill(DurationInput.Field)
+    case countdown
+    case endConfirmLabel
+    case end
+}
+
 /// Everything drawn inside the status item: the mark, the three pill slots
 /// while entering, or the countdown while a session runs or starts.
 ///
@@ -13,12 +21,17 @@ import SwiftUI
 /// growing out of the mark; the bar narrows only once the content on its
 /// way out has gone.
 struct StatusRootView: View {
+    nonisolated static let hitSpace = "statusItemHits"
+
     let model: MenuBarModel
     let manager: SessionManager
+    let routesClicksManually: Bool
     let onTapIcon: () -> Void
     let onTapPill: (DurationInput.Field) -> Void
     let onTapCountdown: () -> Void
     let onHoldEnd: () -> Void
+    let endsByConfirmClick: Bool
+    let onTapEnd: () -> Void
     let onWidthChange: (CGFloat) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotionEnv
@@ -78,10 +91,24 @@ struct StatusRootView: View {
                         .animation(Motion.base(reduceMotion: reduceMotion), value: model.startErrorShown)
                 }
             } else if showsCountdown {
-                countdown
+                if model.endConfirmArmed && showsRunningControls {
+                    Text("Click again to end")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color(brand: BrandPalette.violet))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .transition(Motion.errorTransition(reduceMotion: reduceMotion))
+                        .contentShape(Rectangle())
+                        .onTapGesture { if !routesClicksManually { onTapEnd() } }
+                        .accessibilityAction { onTapEnd() }
+                        .modifier(StatusHitFrame(model: model, target: .endConfirmLabel))
+                } else {
+                    countdown
+                }
                 if showsRunningControls {
-                    HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd)
+                    HoldToEndButton(reduceMotion: reduceMotion, action: onHoldEnd, confirmClick: endsByConfirmClick, routesClicksManually: routesClicksManually, onTap: onTapEnd)
                         .transition(Motion.ringTransition(reduceMotion: reduceMotion))
+                        .modifier(StatusHitFrame(model: model, target: .end))
                 }
             }
         }
@@ -101,6 +128,7 @@ struct StatusRootView: View {
         // The host is kept as wide as the widest content it has held, so the
         // content must sit at its leading edge rather than centred in it.
         .frame(maxWidth: .infinity, alignment: .leading)
+        .coordinateSpace(.named(Self.hitSpace))
     }
 
     /// A closed eye while idle; it opens while sleep is held, so the app
@@ -114,8 +142,11 @@ struct StatusRootView: View {
             } animation: { _ in
                 Motion.snappy(reduceMotion: reduceMotion)
             }
-            .onTapGesture(perform: onTapIcon)
+            // The center-located mouse click still reaches SwiftUI on macOS 27.
+            .onTapGesture { if !routesClicksManually { onTapIcon() } }
             .accessibilityLabel("Insomnia")
+            .accessibilityAction { onTapIcon() }
+            .modifier(StatusHitFrame(model: model, target: .icon))
     }
 
     /// All three slots are in the layout whenever they are present;
@@ -145,6 +176,7 @@ struct StatusRootView: View {
                 focusBounce: model.focusBounce,
                 rejectBounce: model.rejectBounce,
                 reduceMotion: reduceMotion,
+                routesClicksManually: routesClicksManually,
                 onTap: { onTapPill(field) }
             )
             .onGeometryChange(for: CGFloat.self) { proxy in
@@ -165,6 +197,7 @@ struct StatusRootView: View {
             // instant either way, so a leaving slot never holds the layout.
             .transition(.asymmetric(insertion: shown ? Motion.pillTransition(reduceMotion: reduceMotion) : .identity, removal: .identity))
             .zIndex(Double(10 - index))
+            .modifier(StatusHitFrame(model: model, target: .pill(field)))
         }
     }
 
@@ -192,8 +225,10 @@ struct StatusRootView: View {
             .padding(.trailing, 1)
             .transition(Motion.countdownTransition(reduceMotion: reduceMotion))
             .contentShape(Rectangle())
-            .onTapGesture(perform: onTapCountdown)
+            .onTapGesture { if !routesClicksManually { onTapCountdown() } }
             .accessibilityLabel(model.phase == .starting ? "Starting session" : countdownText)
+            .accessibilityAction { onTapCountdown() }
+            .modifier(StatusHitFrame(model: model, target: .countdown))
     }
 
     /// The manager refused the start: say so next to the pills the value is
@@ -207,5 +242,29 @@ struct StatusRootView: View {
             .fixedSize()
             .transition(Motion.errorTransition(reduceMotion: reduceMotion))
             .accessibilityLabel("Start failed")
+    }
+}
+
+/// A departing view may clear only its own last report, including when a
+/// replacement reports the same rectangle before the departure finishes.
+private struct StatusHitFrame: ViewModifier {
+    let model: MenuBarModel
+    let target: StatusHitTarget
+    @State private var owner = UUID()
+    @State private var lastReportedFrame: CGRect?
+
+    func body(content: Content) -> some View {
+        content
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(StatusRootView.hitSpace)) } action: { frame in
+                lastReportedFrame = frame
+                model.hitFrameOwners[target] = owner
+                model.hitFrames[target] = frame
+            }
+            .onDisappear {
+                guard model.hitFrameOwners[target] == owner,
+                      model.hitFrames[target] == lastReportedFrame else { return }
+                model.hitFrames[target] = nil
+                model.hitFrameOwners[target] = nil
+            }
     }
 }

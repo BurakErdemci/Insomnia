@@ -31,9 +31,12 @@ final class StatusItemController: NSObject {
     /// manager's fake clock so the text does not depend on when the tick
     /// happens to run.
     private let clock: @Sendable () -> Date
+    private let osMajorVersion: Int
+    var endsByConfirmClick: Bool { osMajorVersion >= 27 }
+    var routesClicksManually: Bool { osMajorVersion >= 27 }
 
     private let statusItem: NSStatusItem
-    private var hostingView: StatusHostingView?
+    private(set) var hostingView: StatusHostingView?
     private var widthWriter: StatusWidthWriter?
 
     private var keyMonitor: Any?
@@ -70,7 +73,8 @@ final class StatusItemController: NSObject {
         showSettings: @escaping () -> Void,
         makeWidthWriter: WidthWriterFactory? = nil,
         confirmRelaunch: (@MainActor (String) -> Bool)? = nil,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clock: @escaping @Sendable () -> Date = { Date() },
+        osMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
     ) {
         self.manager = manager
         self.status = status
@@ -78,6 +82,7 @@ final class StatusItemController: NSObject {
         self.makeWidthWriter = makeWidthWriter
         self.confirmRelaunch = confirmRelaunch ?? Self.askBeforeRelaunch
         self.clock = clock
+        self.osMajorVersion = osMajorVersion
         Self.seedPreferredPositionIfNeeded()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.autosaveName = Self.autosaveName
@@ -106,14 +111,20 @@ final class StatusItemController: NSObject {
         let root = StatusRootView(
             model: model,
             manager: manager,
+            routesClicksManually: routesClicksManually,
             onTapIcon: { [weak self] in self?.iconTapped() },
             onTapPill: { [weak self] field in self?.focus(field) },
             onTapCountdown: { [weak self] in self?.customExtend() },
             onHoldEnd: { [weak self] in self?.holdToEnd() },
+            endsByConfirmClick: endsByConfirmClick,
+            onTapEnd: { [weak self] in self?.endTapped() },
             onWidthChange: { [weak self] w in self?.widthChanged(w) }
         )
         let host = Self.makeHostingView(root)
         host.onRightMouseDown = { [weak self] in self?.showMenu() }
+        if routesClicksManually {
+            host.leftClickRouter = { [weak self] point in self?.routeClick(at: point) }
+        }
         host.translatesAutoresizingMaskIntoConstraints = true
         // The height follows the button; the width is set from the layout
         // (`retargetWidth`) and never from the button, whose width is the
@@ -125,7 +136,7 @@ final class StatusItemController: NSObject {
         button.addSubview(host)
         button.title = ""
         button.image = nil
-        // SwiftUI handles the clicks; the cell must not paint a highlight.
+        // The cell must not paint a highlight over the hosted content.
         (button.cell as? NSButtonCell)?.highlightsBy = []
         hostingView = host
         // The layout may already have reported through `onGeometryChange`
@@ -226,6 +237,7 @@ final class StatusItemController: NSObject {
     }
 
     private func managerChanged() {
+        if !manager.isActive || model.phase != .running { model.disarmEndConfirm() }
         reminder.sync(endsAt: manager.session?.endsAt)
         if let next = Self.phase(forActive: manager.isActive, phase: model.phase) {
             switch next {
@@ -274,6 +286,34 @@ final class StatusItemController: NSObject {
     }
 
     // MARK: Clicks
+
+    static func hitTarget(at point: CGPoint, frames: [StatusHitTarget: CGRect]) -> StatusHitTarget? {
+        frames.filter { $0.value.contains(point) }
+            .min { $0.value.width * $0.value.height < $1.value.width * $1.value.height }?.key
+    }
+
+    // macOS 27 clicks arrive at release at the item's center; SwiftUI ignores replayed events.
+    func routeClick(at point: CGPoint) {
+        let target = Self.hitTarget(at: point, frames: model.hitFrames)
+        let x = String(format: "%.1f", Double(point.x))
+        let y = String(format: "%.1f", Double(point.y))
+        Log.info("status item click at (\(x), \(y)) -> \(target.map { String(describing: $0) } ?? "none")")
+        switch target {
+        case .icon:
+            iconTapped()
+        case let .pill(field):
+            guard model.phase.isEntering,
+                  let index = DurationInput.Field.allCases.firstIndex(of: field),
+                  index < model.visiblePills else { return }
+            focus(field)
+        case .countdown:
+            customExtend()
+        case .end, .endConfirmLabel:
+            endTapped()
+        case nil:
+            break
+        }
+    }
 
     func iconTapped() {
         model.iconBounce += 1
@@ -624,6 +664,18 @@ final class StatusItemController: NSObject {
         endNow()
     }
 
+    func endTapped() {
+        guard manager.isActive else { return }
+        let now = clock()
+        if model.endConfirmArmed, let deadline = model.endConfirmDeadline, now <= deadline {
+            model.disarmEndConfirm()
+            endNow()
+        } else {
+            model.disarmEndConfirm()
+            model.armEndConfirm(now: now)
+        }
+    }
+
     /// Clicking the mark or the countdown while a session runs: reopen the
     /// pills, this time to extend. Ignored while a start is still in flight.
     func customExtend() {
@@ -772,8 +824,23 @@ final class StatusItemController: NSObject {
             return event
         }
         globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
-            Task { @MainActor in self?.collapse() }
+            let location = NSEvent.mouseLocation
+            Task { @MainActor in
+                guard let self, !Self.shouldIgnoreGlobalClick(
+                    at: location, itemWindowFrame: self.button?.window?.frame,
+                    routesManually: self.routesClicksManually
+                ) else { return }
+                self.collapse()
+            }
         }
+    }
+
+    static func clickIsOnItem(_ point: NSPoint, itemWindowFrame: NSRect?) -> Bool {
+        itemWindowFrame?.contains(point) ?? false
+    }
+
+    static func shouldIgnoreGlobalClick(at point: NSPoint, itemWindowFrame: NSRect?, routesManually: Bool) -> Bool {
+        routesManually && clickIsOnItem(point, itemWindowFrame: itemWindowFrame)
     }
 
     private func removeMonitors() {
@@ -849,6 +916,7 @@ final class StatusItemController: NSObject {
 /// on a one-button mouse.
 final class StatusHostingView: NSHostingView<StatusRootView> {
     var onRightMouseDown: (() -> Void)?
+    var leftClickRouter: ((CGPoint) -> Void)?
 
     override func rightMouseDown(with event: NSEvent) {
         onRightMouseDown?()
@@ -859,6 +927,17 @@ final class StatusHostingView: NSHostingView<StatusRootView> {
             onRightMouseDown?()
             return
         }
+        if let leftClickRouter, let window {
+            var point = convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+            if !isFlipped { point.y = bounds.height - point.y }
+            leftClickRouter(point)
+            return
+        }
         super.mouseDown(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard leftClickRouter == nil else { return }
+        super.mouseUp(with: event)
     }
 }

@@ -4,16 +4,422 @@ import XCTest
 
 final class UIStatusTests: XCTestCase {
     @MainActor
+    func testHitTargetFindsTheFrameContainingThePoint() {
+        let frames: [StatusHitTarget: CGRect] = [.icon: CGRect(x: 6, y: 2, width: 20, height: 20)]
+        XCTAssertEqual(StatusItemController.hitTarget(at: CGPoint(x: 16, y: 12), frames: frames), .icon)
+    }
+
+    @MainActor
+    func testHitTargetPrefersTheSmallestOverlappingFrame() {
+        let frames: [StatusHitTarget: CGRect] = [
+            .countdown: CGRect(x: 0, y: 0, width: 100, height: 22),
+            .end: CGRect(x: 80, y: 2, width: 18, height: 18)
+        ]
+        XCTAssertEqual(StatusItemController.hitTarget(at: CGPoint(x: 90, y: 12), frames: frames), .end)
+    }
+
+    @MainActor
+    func testHitTargetReturnsNilOutsideAllFrames() {
+        let frames: [StatusHitTarget: CGRect] = [.icon: CGRect(x: 6, y: 2, width: 20, height: 20)]
+        XCTAssertNil(StatusItemController.hitTarget(at: CGPoint(x: 100, y: 12), frames: frames))
+        XCTAssertNil(StatusItemController.hitTarget(at: .zero, frames: [:]))
+    }
+
+    @MainActor
+    func testMacOS27RoutesTheEyeAndVisiblePillsWithoutCollapsing() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        XCTAssertNotNil(lab.controller.hostingView)
+        XCTAssertNotNil(lab.controller.hostingView?.leftClickRouter)
+        lab.model.hitFrames = [.icon: CGRect(x: 6, y: 2, width: 20, height: 20)]
+        lab.controller.routeClick(at: CGPoint(x: 16, y: 12))
+        XCTAssertEqual(lab.model.phase, .entering(.start))
+        await lab.settleOpen()
+
+        lab.model.hitFrames = [
+            .pill(.days): CGRect(x: 33, y: 2, width: 50, height: 20),
+            .pill(.minutes): CGRect(x: 147, y: 2, width: 50, height: 20)
+        ]
+        lab.controller.routeClick(at: CGPoint(x: 172, y: 12))
+        XCTAssertEqual(lab.model.focused, .minutes)
+        XCTAssertEqual(lab.model.phase, .entering(.start))
+        XCTAssertFalse(lab.model.pillsCollapsing)
+        lab.controller.routeClick(at: CGPoint(x: 58, y: 12))
+        XCTAssertEqual(lab.model.focused, .days)
+        XCTAssertEqual(lab.model.phase, .entering(.start))
+        XCTAssertFalse(lab.model.pillsCollapsing)
+    }
+
+    @MainActor
+    func testRouteClickIgnoresAHiddenPill() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        lab.controller.expand(mode: .start)
+        await lab.settleOpen()
+        lab.model.visiblePills = 2
+        lab.model.hitFrames = [.pill(.minutes): CGRect(x: 147, y: 2, width: 50, height: 20)]
+        let bounce = lab.model.focusBounce
+        lab.controller.routeClick(at: CGPoint(x: 172, y: 12))
+        XCTAssertEqual(lab.model.focused, .hours)
+        XCTAssertEqual(lab.model.focusBounce, bounce)
+        XCTAssertEqual(lab.model.phase, .entering(.start))
+    }
+
+    @MainActor
+    func testRouteClickIgnoresPillsWhenNotEntering() {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        lab.model.hitFrames = [.pill(.days): CGRect(x: 33, y: 2, width: 50, height: 20)]
+        lab.model.visiblePills = 3
+        let phases: [MenuBarModel.Phase] = [.idle, .starting, .running]
+        for phase in phases {
+            lab.model.phase = phase
+            lab.controller.routeClick(at: CGPoint(x: 58, y: 12))
+            XCTAssertEqual(lab.model.phase, phase)
+            XCTAssertEqual(lab.model.focused, .hours)
+            XCTAssertEqual(lab.model.focusBounce, 0)
+        }
+    }
+
+    @MainActor
+    func testRouteClickOnTheEndControlArmsThenEndsTheSession() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        await lab.manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { lab.model.phase == .running }
+        XCTAssertTrue(running)
+        lab.model.hitFrames = [.end: CGRect(x: 100, y: 2, width: 18, height: 18)]
+        lab.controller.routeClick(at: CGPoint(x: 109, y: 11))
+        XCTAssertTrue(lab.model.endConfirmArmed)
+        XCTAssertTrue(lab.manager.isActive)
+        lab.controller.routeClick(at: CGPoint(x: 109, y: 11))
+        XCTAssertFalse(lab.model.endConfirmArmed)
+        let ended = await waitForEndConfirmState { !lab.manager.isActive && lab.model.phase == .idle }
+        XCTAssertTrue(ended)
+    }
+
+    @MainActor
+    func testRouteClickOnTheCountdownOpensTheExtendPills() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        await lab.manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { lab.model.phase == .running }
+        XCTAssertTrue(running)
+        lab.controller.endTapped()
+        lab.model.hitFrames = [.countdown: CGRect(x: 33, y: 2, width: 60, height: 20)]
+        lab.controller.routeClick(at: CGPoint(x: 63, y: 12))
+        XCTAssertEqual(lab.model.phase, .entering(.extend))
+        XCTAssertFalse(lab.model.endConfirmArmed)
+        XCTAssertTrue(lab.manager.isActive)
+    }
+
+    @MainActor
+    func testRouteClickOutsideEveryFrameLeavesTheOpenPillsAlone() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        lab.controller.expand(mode: .start)
+        await lab.settleOpen()
+        lab.model.hitFrames = [.icon: CGRect(x: 6, y: 2, width: 20, height: 20)]
+        let bounce = lab.model.iconBounce
+        lab.controller.routeClick(at: CGPoint(x: 250, y: 12))
+        XCTAssertEqual(lab.model.phase, .entering(.start))
+        XCTAssertEqual(lab.model.focused, .hours)
+        XCTAssertEqual(lab.model.visiblePills, 3)
+        XCTAssertEqual(lab.model.iconBounce, bounce)
+        XCTAssertFalse(lab.model.pillsCollapsing)
+    }
+
+    @MainActor
+    func testMacOS26HostKeepsSwiftUIMouseHandling() {
+        let lab = Lab(osMajorVersion: 26)
+        defer { lab.tearDown() }
+        XCTAssertNotNil(lab.controller.hostingView)
+        XCTAssertNil(lab.controller.hostingView?.leftClickRouter)
+    }
+
+    @MainActor
+    func testGlobalClickFilterOnlyIgnoresPointsInsideTheItemWindow() {
+        let frame = NSRect(x: 1000, y: 800, width: 226, height: 22)
+        XCTAssertTrue(StatusItemController.clickIsOnItem(NSPoint(x: 1200, y: 810), itemWindowFrame: frame))
+        XCTAssertFalse(StatusItemController.clickIsOnItem(NSPoint(x: 900, y: 810), itemWindowFrame: frame))
+        XCTAssertFalse(StatusItemController.clickIsOnItem(NSPoint(x: 1200, y: 810), itemWindowFrame: nil))
+    }
+
+    @MainActor
+    func testGlobalClickFilterAppliesOnlyWithManualRouting() {
+        let frame = NSRect(x: 1000, y: 800, width: 226, height: 22)
+        let inside = NSPoint(x: 1200, y: 810)
+        let outside = NSPoint(x: 900, y: 810)
+        for os in [26, 27] {
+            let lab = Lab(osMajorVersion: os)
+            defer { lab.tearDown() }
+            XCTAssertEqual(StatusItemController.shouldIgnoreGlobalClick(
+                at: inside, itemWindowFrame: frame, routesManually: lab.controller.routesClicksManually
+            ), os == 27)
+            XCTAssertFalse(StatusItemController.shouldIgnoreGlobalClick(
+                at: outside, itemWindowFrame: frame, routesManually: lab.controller.routesClicksManually
+            ))
+            XCTAssertFalse(StatusItemController.shouldIgnoreGlobalClick(
+                at: inside, itemWindowFrame: nil, routesManually: lab.controller.routesClicksManually
+            ))
+        }
+    }
+
+    @MainActor
+    func testHostedRootActionsStayActiveOnBothRoutingPaths() async throws {
+        for os in [26, 27] {
+            let lab = Lab(osMajorVersion: os)
+            defer { lab.tearDown() }
+            let root = try XCTUnwrap(lab.controller.hostingView).rootView
+            XCTAssertEqual(root.routesClicksManually, os == 27)
+            root.onTapIcon()
+            XCTAssertEqual(lab.model.phase, .entering(.start))
+            await lab.settleOpen()
+            root.onTapPill(.minutes)
+            XCTAssertEqual(lab.model.focused, .minutes)
+            lab.controller.collapse()
+            await lab.settleClose()
+
+            await lab.manager.start(duration: 3600)
+            var settled = await waitForEndConfirmState { lab.model.phase == .running }
+            XCTAssertTrue(settled)
+            root.onTapCountdown()
+            XCTAssertEqual(lab.model.phase, .entering(.extend))
+            lab.controller.collapse()
+            await lab.settleClose()
+            root.onTapEnd()
+            XCTAssertTrue(lab.model.endConfirmArmed)
+            root.onTapEnd()
+            settled = await waitForEndConfirmState { !lab.manager.isActive && lab.model.phase == .idle }
+            XCTAssertTrue(settled)
+
+            await lab.manager.start(duration: 3600)
+            settled = await waitForEndConfirmState { lab.model.phase == .running }
+            XCTAssertTrue(settled)
+            root.onHoldEnd()
+            settled = await waitForEndConfirmState { !lab.manager.isActive && lab.model.phase == .idle }
+            XCTAssertTrue(settled)
+        }
+    }
+
+    @MainActor
+    func testHostedCountdownRemainsClickableAfterConfirmationExpires() async throws {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        await lab.manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { lab.model.phase == .running }
+        XCTAssertTrue(running)
+        let host = try XCTUnwrap(lab.controller.hostingView)
+        XCTAssertNotNil(host.window, "the root must be hosted in a real status item window")
+        lab.model.endConfirmWindow = 0.5
+
+        for cycle in 0..<3 {
+            lab.controller.endTapped()
+            let armed = await waitForEndConfirmState {
+                host.layoutSubtreeIfNeeded()
+                return lab.model.endConfirmArmed && lab.model.hitFrames[.endConfirmLabel] != nil
+            }
+            XCTAssertTrue(armed, "the confirmation label has a frame in cycle \(cycle)")
+            let expired = await waitForEndConfirmState {
+                host.layoutSubtreeIfNeeded()
+                return !lab.model.endConfirmArmed && lab.model.hitFrames[.countdown] != nil
+                    && lab.model.hitFrames[.endConfirmLabel] == nil
+            }
+            XCTAssertTrue(expired, "the countdown has a frame after expiry in cycle \(cycle)")
+            let frame = try XCTUnwrap(lab.model.hitFrames[.countdown])
+            lab.controller.routeClick(at: CGPoint(x: frame.midX, y: frame.midY))
+            XCTAssertEqual(lab.model.phase, .entering(.extend))
+            XCTAssertTrue(lab.manager.isActive)
+            lab.controller.collapse()
+            await lab.settleClose()
+        }
+    }
+
+    @MainActor
+    func testRouteClickOnTheConfirmationLabelEndsTheSession() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        await lab.manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { lab.model.phase == .running }
+        XCTAssertTrue(running)
+        lab.controller.endTapped()
+        XCTAssertTrue(lab.model.endConfirmArmed)
+        lab.model.hitFrames = [.endConfirmLabel: CGRect(x: 33, y: 2, width: 100, height: 20)]
+        lab.controller.routeClick(at: CGPoint(x: 83, y: 12))
+        XCTAssertFalse(lab.model.endConfirmArmed)
+        let ended = await waitForEndConfirmState { !lab.manager.isActive && lab.model.phase == .idle }
+        XCTAssertTrue(ended)
+    }
+
+    @MainActor
+    func testLateConfirmingClickRearmsBeforeTheTimerClearsTheFlag() async {
+        _ = NSApplication.shared
+        let harness = Harness()
+        let manager = harness.makeManager()
+        let clock = harness.clock
+        let controller = StatusItemController(
+            manager: manager, status: PlaceholderStatus(), showSettings: {},
+            clock: { clock.now }, osMajorVersion: 27
+        )
+        defer {
+            controller.collapse()
+            controller.model.disarmEndConfirm()
+            harness.home.destroy()
+        }
+        await manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { controller.model.phase == .running }
+        XCTAssertTrue(running)
+        controller.endTapped()
+        XCTAssertEqual(controller.model.endConfirmDeadline, clock.now.addingTimeInterval(2))
+        clock.advance(3)
+        XCTAssertTrue(controller.model.endConfirmArmed, "the clearing task has not run")
+
+        controller.endTapped()
+        XCTAssertTrue(controller.model.endConfirmArmed)
+        XCTAssertEqual(controller.model.endConfirmDeadline, clock.now.addingTimeInterval(2))
+        XCTAssertTrue(manager.isActive)
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(manager.isActive, "the late click must not queue an end request")
+        XCTAssertTrue(controller.model.endConfirmArmed)
+        controller.model.disarmEndConfirm()
+        XCTAssertNil(controller.model.endConfirmDeadline)
+    }
+
+    @MainActor
+    private func waitForEndConfirmState(_ condition: @MainActor () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
+    @MainActor
+    func testMacOS27EndTappedArmsThenEndsOnTheConfirmingClick() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        await lab.manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { lab.model.phase == .running }
+        XCTAssertTrue(running)
+        XCTAssertTrue(lab.controller.endsByConfirmClick)
+        XCTAssertEqual(lab.model.endConfirmWindow, 2)
+
+        lab.controller.endTapped()
+        XCTAssertTrue(lab.model.endConfirmArmed)
+        XCTAssertTrue(lab.manager.isActive)
+        lab.controller.endTapped()
+        XCTAssertFalse(lab.model.endConfirmArmed)
+        let ended = await waitForEndConfirmState { !lab.manager.isActive && lab.model.phase == .idle }
+        XCTAssertTrue(ended)
+        XCTAssertFalse(lab.manager.isActive)
+        XCTAssertFalse(lab.model.endConfirmArmed)
+    }
+
+    @MainActor
+    func testEndTappedAfterTheConfirmationWindowOnlyArmsAgain() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        await lab.manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { lab.model.phase == .running }
+        XCTAssertTrue(running)
+        lab.model.endConfirmWindow = 0.02
+        lab.controller.endTapped()
+        XCTAssertTrue(lab.model.endConfirmArmed)
+        let expired = await waitForEndConfirmState { !lab.model.endConfirmArmed }
+        XCTAssertTrue(expired)
+
+        lab.controller.endTapped()
+        XCTAssertTrue(lab.model.endConfirmArmed)
+        XCTAssertTrue(lab.manager.isActive)
+        await lab.manager.end(reason: .user)
+        let cleared = await waitForEndConfirmState { !lab.model.endConfirmArmed }
+        XCTAssertTrue(cleared)
+    }
+
+    @MainActor
+    func testManagerEndingTheSessionClearsEndConfirmation() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        await lab.manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { lab.model.phase == .running }
+        XCTAssertTrue(running)
+        lab.controller.endTapped()
+        XCTAssertTrue(lab.model.endConfirmArmed)
+
+        await lab.manager.end(reason: .user)
+        let cleared = await waitForEndConfirmState { !lab.model.endConfirmArmed && lab.model.phase == .idle }
+        XCTAssertTrue(cleared)
+        XCTAssertFalse(lab.manager.isActive)
+    }
+
+    @MainActor
+    func testLeavingRunningForExtendPillsDisarmsEndConfirmation() async {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        await lab.manager.start(duration: 3600)
+        let running = await waitForEndConfirmState { lab.model.phase == .running }
+        XCTAssertTrue(running)
+        lab.controller.endTapped()
+        XCTAssertTrue(lab.model.endConfirmArmed)
+
+        lab.controller.customExtend()
+        XCTAssertEqual(lab.model.phase, .entering(.extend))
+        XCTAssertFalse(lab.model.endConfirmArmed)
+        // The open pills keep a visible KeyCatcherPanel, which a later test
+        // would find.
+        lab.controller.collapse()
+        await lab.manager.end(reason: .user)
+    }
+
+    @MainActor
+    func testEndTappedWithoutAnActiveSessionDoesNotArm() {
+        let lab = Lab(osMajorVersion: 27)
+        defer { lab.tearDown() }
+        lab.controller.endTapped()
+        XCTAssertFalse(lab.model.endConfirmArmed)
+        XCTAssertFalse(lab.manager.isActive)
+    }
+
+    @MainActor
+    func testRearmingEndConfirmationCancelsThePreviousTimer() async {
+        let model = MenuBarModel()
+        model.endConfirmWindow = 0.01
+        model.armEndConfirm()
+        model.endConfirmWindow = 2
+        model.armEndConfirm()
+        try? await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(model.endConfirmArmed)
+        model.disarmEndConfirm()
+        XCTAssertFalse(model.endConfirmArmed)
+    }
+
+    @MainActor
+    func testMacOS26KeepsTheHoldToEndPath() async {
+        let lab = Lab(osMajorVersion: 26)
+        defer { lab.tearDown() }
+        XCTAssertFalse(lab.controller.endsByConfirmClick)
+        await lab.manager.start(duration: 3600)
+        lab.controller.holdToEnd()
+        let ended = await waitForEndConfirmState { !lab.manager.isActive }
+        XCTAssertTrue(ended)
+        XCTAssertFalse(lab.model.endConfirmArmed)
+    }
+
+    @MainActor
     func testStatusHostUsesIntrinsicSizingAndHasAnIdleFittingSize() {
         let harness = Harness()
         defer { harness.home.destroy() }
         let root = StatusRootView(
             model: MenuBarModel(),
             manager: harness.makeManager(),
+            routesClicksManually: false,
             onTapIcon: {},
             onTapPill: { _ in },
             onTapCountdown: {},
             onHoldEnd: {},
+            endsByConfirmClick: false,
+            onTapEnd: {},
             onWidthChange: { _ in }
         )
 
@@ -40,17 +446,20 @@ final class UIStatusTests: XCTestCase {
             let root = StatusRootView(
                 model: model,
                 manager: manager,
+                routesClicksManually: false,
                 onTapIcon: {},
                 onTapPill: { _ in },
                 onTapCountdown: {},
                 onHoldEnd: {},
+                endsByConfirmClick: false,
+                onTapEnd: {},
                 onWidthChange: { _ in }
             )
             return StatusItemController.makeHostingView(root).fittingSize.width
         }
         let idle = MenuBarModel()
         let idleWidth = StatusItemController.makeHostingView(StatusRootView(
-            model: idle, manager: manager, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, onWidthChange: { _ in }
+            model: idle, manager: manager, routesClicksManually: false, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, endsByConfirmClick: false, onTapEnd: {}, onWidthChange: { _ in }
         )).fittingSize.width
 
         model.visiblePills = 0
@@ -487,7 +896,7 @@ final class UIStatusTests: XCTestCase {
         let probe: WidthProbe
         let controller: StatusItemController
 
-        init() {
+        init(osMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion) {
             _ = NSApplication.shared
             h = Harness()
             manager = h.makeManager()
@@ -497,7 +906,8 @@ final class UIStatusTests: XCTestCase {
                 manager: manager,
                 status: PlaceholderStatus(),
                 showSettings: {},
-                makeWidthWriter: { apply in probe.make(apply: apply) }
+                makeWidthWriter: { apply in probe.make(apply: apply) },
+                osMajorVersion: osMajorVersion
             )
             self.controller = controller
             probe.isFolding = { [weak controller] in controller?.model.pillsCollapsing ?? false }
@@ -509,6 +919,8 @@ final class UIStatusTests: XCTestCase {
         }
 
         func tearDown() {
+            controller.collapse()
+            model.disarmEndConfirm()
             h.home.destroy()
         }
 
@@ -521,7 +933,7 @@ final class UIStatusTests: XCTestCase {
             m.phase = phase
             m.pendingCountdown = model.pendingCountdown
             m.pendingProjection = model.pendingProjection
-            let root = StatusRootView(model: m, manager: manager, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, onWidthChange: { _ in })
+            let root = StatusRootView(model: m, manager: manager, routesClicksManually: controller.routesClicksManually, onTapIcon: {}, onTapPill: { _ in }, onTapCountdown: {}, onHoldEnd: {}, endsByConfirmClick: controller.endsByConfirmClick, onTapEnd: {}, onWidthChange: { _ in })
             return max(StatusItemController.makeHostingView(root).fittingSize.width.rounded(.up), 24)
         }
 

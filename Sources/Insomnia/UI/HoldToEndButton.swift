@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Press-and-hold "end session" control that sits to the right of the
-/// countdown in the status item.
+/// End session control next to the countdown. macOS 27 uses a confirming
+/// click; earlier versions use a press and hold.
 ///
 /// A ring draws around the glyph for `Motion.holdDuration` while the mouse
 /// is down; only a completed ring ends the session. Releasing early, or
@@ -10,6 +10,9 @@ import SwiftUI
 struct HoldToEndButton: View {
     let reduceMotion: Bool
     let action: () -> Void
+    let confirmClick: Bool
+    let routesClicksManually: Bool
+    let onTap: () -> Void
 
     @State private var progress: CGFloat = 0
     /// Mouse is down and the ring is drawing.
@@ -26,6 +29,38 @@ struct HoldToEndButton: View {
     private let cancelDistance: CGFloat = 12
 
     var body: some View {
+        if confirmClick {
+            ring
+                .onTapGesture { if !routesClicksManually { onTap() } }
+                .help("Click, then click again to end the session")
+                .accessibilityLabel("End session")
+                .accessibilityHint("Click twice")
+                .accessibilityAction { onTap() }
+        } else {
+            ring
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            if !pressed {
+                                pressed = true
+                                begin()
+                            } else if holding, hypot(value.translation.width, value.translation.height) > cancelDistance {
+                                release()
+                            }
+                        }
+                        .onEnded { _ in
+                            pressed = false
+                            if holding { release() }
+                        }
+                )
+                .help("Hold to end the session")
+                .accessibilityLabel("End session")
+                .accessibilityHint("Press and hold")
+                .accessibilityAction { action() }
+        }
+    }
+
+    private var ring: some View {
         ZStack {
             Circle()
                 .stroke(Color.white.opacity(0.14), lineWidth: lineWidth)
@@ -42,25 +77,6 @@ struct HoldToEndButton: View {
         .animation(Motion.snappy(reduceMotion: reduceMotion), value: holding)
         .frame(width: 20, height: 20)
         .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { value in
-                    if !pressed {
-                        pressed = true
-                        begin()
-                    } else if holding, hypot(value.translation.width, value.translation.height) > cancelDistance {
-                        release()
-                    }
-                }
-                .onEnded { _ in
-                    pressed = false
-                    if holding { release() }
-                }
-        )
-        .help("Hold to end the session")
-        .accessibilityLabel("End session")
-        .accessibilityHint("Press and hold")
-        .accessibilityAction { action() }
     }
 
     /// Start drawing the ring and arm the completion.
